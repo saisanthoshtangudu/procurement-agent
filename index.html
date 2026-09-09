@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Procurement Agent</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="style.css?v=9" />
+  </head>
+  <body>
+    <!-- ── Header ──────────────────────────────────── -->
+    <header>
+      <div class="logo">Procurement<span>Agent</span></div>
+    </header>
+
+    <!-- ── Navigation ──────────────────────────────── -->
+    <nav>
+      <button data-page="page-rfq" class="active">Create RFQ</button>
+      <button data-page="page-compare">Compare Quotes</button>
+    </nav>
+
+    <!-- ── Main ────────────────────────────────────── -->
+    <main>
+      <!-- PAGE 1 – Create RFQ -->
+      <section id="page-rfq" class="page active">
+        <div class="card">
+          <h2>New Request for Quotation</h2>
+          <p class="subtitle">
+            Fill in the details below to create a new RFQ for vendors.
+          </p>
+
+          <form id="rfq-form">
+            <div class="form-grid">
+              <div class="form-group full">
+                <label for="rfq-item">Item</label>
+                <input
+                  type="text"
+                  id="rfq-item"
+                  placeholder="e.g. Dell Latitude 5540 Laptop"
+                  required
+                />
+              </div>
+              <div class="form-group full">
+                <label for="rfq-specifications">Specifications</label>
+                <textarea
+                  id="rfq-specifications"
+                  rows="3"
+                  placeholder="e.g. Intel Core i7 13th Gen, 16GB DDR5 RAM, 512GB NVMe SSD, Windows 11 Pro"
+                  style="resize: vertical; font-family: inherit; font-size: 0.9rem;"
+                ></textarea>
+              </div>
+              <div class="form-group">
+                <label for="rfq-quantity">Quantity</label>
+                <input
+                  type="number"
+                  id="rfq-quantity"
+                  min="1"
+                  placeholder="e.g. 50"
+                  required
+                />
+              </div>
+              <div class="form-group">
+                <label for="rfq-budget">Budget (USD)</label>
+                <input
+                  type="number"
+                  id="rfq-budget"
+                  min="0"
+                  step="0.01"
+                  placeholder="e.g. 75000"
+                  required
+                />
+              </div>
+              <div class="form-group full">
+                <label for="rfq-location">Delivery Location</label>
+                <input
+                  type="text"
+                  id="rfq-location"
+                  placeholder="e.g. 123 Main St, New York, NY"
+                  required
+                />
+              </div>
+            </div>
+            <div class="form-actions">
+              <button type="submit" class="btn btn-primary">Create RFQ</button>
+              <button type="reset" class="btn btn-secondary">Clear</button>
+            </div>
+          </form>
+        </div>
+
+        <!-- Send to Vendors (shown after RFQ creation) -->
+        <div class="card" id="send-vendors-panel" style="display:none;">
+          <h2>Send RFQ to Vendors</h2>
+          <p class="subtitle">
+            Paste vendor email addresses below — one per line or comma-separated.
+            <span id="send-rfq-ref" style="font-weight:600; color:#2563eb;"></span>
+          </p>
+
+          <div class="form-group" style="margin-bottom:1.25rem;">
+            <label for="vendor-emails-input">Vendor Emails</label>
+            <textarea
+              id="vendor-emails-input"
+              rows="8"
+              placeholder="alice@acme.com&#10;bob@bsupply.com&#10;carol@cvendor.com&#10;&#10;or comma-separated:&#10;alice@acme.com, bob@bsupply.com"
+              style="resize:vertical; font-size:0.875rem; font-family:monospace; line-height:1.6;"
+            ></textarea>
+          </div>
+
+          <div style="display:flex; align-items:center; gap:1rem; flex-wrap:wrap;">
+            <button id="btn-send-vendors" class="btn btn-primary">
+              📧 Send to Vendors
+            </button>
+            <span id="send-vendor-count" style="font-size:0.85rem; color:#64748b;"></span>
+          </div>
+
+          <!-- Result summary banner (shown after send) -->
+          <div id="send-result" style="display:none; margin-top:1.25rem;"></div>
+        </div>
+
+        <!-- Recent RFQs -->
+        <div class="card">
+          <h2>Recent RFQs</h2>
+          <p class="subtitle">Your latest requests for quotation.</p>
+          <div id="recent-rfqs"></div>
+        </div>
+      </section>
+
+      <!-- PAGE 2 – Compare Quotes -->
+      <section id="page-compare" class="page">
+        <div class="card">
+          <h2>Compare Vendor Quotes</h2>
+          <p class="subtitle">
+            Select an RFQ to view and compare all submitted quotes.
+          </p>
+
+          <div class="rfq-selector">
+            <div class="form-group">
+              <label for="compare-rfq-select">Select RFQ</label>
+              <select id="compare-rfq-select">
+                <option value="">-- Select an RFQ --</option>
+              </select>
+            </div>
+            <button
+              id="btn-check-replies"
+              class="btn btn-primary"
+              style="height: fit-content"
+            >
+              📥 Check for New Replies
+            </button>
+            <button
+              id="btn-refresh-compare"
+              class="btn btn-secondary"
+              style="height: fit-content"
+            >
+              ↻ Refresh
+            </button>
+          </div>
+
+          <div id="comparison-result">
+            <div class="empty-state">
+              <div class="icon">📊</div>
+              <p>Select an RFQ to view vendor quotes.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <!-- Purchase Order Confirmation Modal -->
+    <div id="po-modal" class="modal-backdrop" style="display: none;">
+      <div class="modal-box">
+        <div class="modal-header">
+          <h3 id="po-modal-title" style="font-size: 1.15rem; font-weight: 700; color: #0f172a; margin: 0;">Place Purchase Order</h3>
+          <button id="po-modal-close" class="modal-close" aria-label="Close">&times;</button>
+        </div>
+        <div class="modal-body" style="margin: 1rem 0;">
+          <p id="po-modal-vendor-info" style="font-size: 0.9rem; color: #334155; margin-bottom: 0.75rem;"></p>
+          <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 1rem; margin-bottom: 1rem;">
+            <p id="po-modal-question" style="font-size: 0.925rem; font-weight: 600; color: #1e293b; margin-bottom: 0.6rem;">
+              Send order confirmation to this vendor?
+            </p>
+            <label for="po-modal-email" style="display: block; font-size: 0.775rem; font-weight: 600; color: #64748b; margin-bottom: 0.3rem;">
+              Vendor Email Address:
+            </label>
+            <input
+              type="email"
+              id="po-modal-email"
+              class="form-input"
+              placeholder="vendor@example.com"
+              style="width: 100%; padding: 0.5rem 0.75rem; font-size: 0.875rem; border: 1px solid #cbd5e1; border-radius: 6px;"
+            />
+          </div>
+          <p style="font-size: 0.8rem; color: #64748b; line-height: 1.4;">
+            Choose <strong>Yes</strong> to email the PO document to the vendor and download a copy, or <strong>No</strong> to download the PDF directly without sending an email.
+          </p>
+        </div>
+        <div class="modal-footer" style="display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 1.25rem;">
+          <button id="po-btn-cancel" class="btn btn-secondary">Cancel</button>
+          <button id="po-btn-no" class="btn btn-secondary">No (Download Only)</button>
+          <button id="po-btn-yes" class="btn btn-primary">Yes (Send Email &amp; Download)</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Toast -->
+    <div id="toast" class="toast"></div>
+
+    <!-- Supabase JS Client (CDN) -->
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+    <script src="app.js?v=9"></script>
+  </body>
+</html>
