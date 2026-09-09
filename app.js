@@ -9,7 +9,7 @@ const db = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 // Change this one constant to switch between local and deployed backend.
 // Local:    const API_BASE = "http://localhost:5000";
 // Deployed: const API_BASE = "https://procurement-agent-backend.onrender.com";
-const API_BASE = "http://localhost:5000";
+const API_BASE = "https://procurement-agent-backend.onrender.com";
 
 // ── DOM Helpers ────────────────────────────────────────
 const $ = (sel) => document.querySelector(sel);

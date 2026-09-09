@@ -14,6 +14,8 @@ import subprocess
 import sys
 import time
 
+from dotenv import load_dotenv
+
 if sys.platform == "win32":
     try:
         sys.stdout.reconfigure(encoding="utf-8")
@@ -24,6 +26,9 @@ FRONTEND_PORT = 8000
 BACKEND_PORT = 5000
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 
+# Explicitly load .env in start.py
+load_dotenv(os.path.join(PROJECT_DIR, ".env"))
+
 
 def main():
     print("=" * 60)
@@ -32,14 +37,19 @@ def main():
     print(f"  📁 Directory   : {PROJECT_DIR}")
     print(f"  🌐 Web App     : http://localhost:{FRONTEND_PORT}")
     print(f"  ⚙️  Flask API   : http://localhost:{BACKEND_PORT}")
+    brevo_loaded = "Configured" if os.getenv("BREVO_API_KEY") else "Missing"
+    print(f"  📧 Brevo API   : {brevo_loaded}")
     print("-" * 60)
     print("  Starting servers...")
+
+    env = os.environ.copy()
 
     # 1. Start Python built-in HTTP server for frontend files
     http_cmd = [sys.executable, "-m", "http.server", str(FRONTEND_PORT)]
     frontend_proc = subprocess.Popen(
         http_cmd,
         cwd=PROJECT_DIR,
+        env=env,
     )
 
     # 2. Start Flask API server (server.py)
@@ -47,6 +57,7 @@ def main():
     backend_proc = subprocess.Popen(
         flask_cmd,
         cwd=PROJECT_DIR,
+        env=env,
     )
 
     time.sleep(1)
