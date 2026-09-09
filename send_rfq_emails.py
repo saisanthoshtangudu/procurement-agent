@@ -476,6 +476,8 @@ def send_email_via_brevo(recipient: str, subject: str, text_body: str, html_body
     try:
         response = requests.post(BREVO_API_URL, json=payload, headers=headers, timeout=30)
         response.raise_for_status()
+        data = response.json() if response.text else {}
+        return data.get("messageId", "")
     except requests.exceptions.RequestException as exc:
         details = ""
         if response is not None:
@@ -489,9 +491,9 @@ def send_email_via_brevo(recipient: str, subject: str, text_body: str, html_body
         raise RuntimeError(f"Brevo API request failed: {exc}{details}") from exc
 
 
-def send_rfq_email_brevo(rfq: dict, recipient: str) -> None:
+def send_rfq_email_brevo(rfq: dict, recipient: str) -> str:
     content = get_rfq_email_content(rfq, recipient)
-    send_email_via_brevo(
+    return send_email_via_brevo(
         recipient=recipient,
         subject=content["subject"],
         text_body=content["plain_body"],
@@ -887,7 +889,7 @@ def send_po_email_brevo(rfq: dict, quote: dict, recipient: str, po_pdf_bytes: by
 """
 
     filename = f"{po_ref}.pdf"
-    send_email_via_brevo(
+    return send_email_via_brevo(
         recipient=recipient,
         subject=subject,
         text_body=text_body,

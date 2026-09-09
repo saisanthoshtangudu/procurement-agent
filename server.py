@@ -99,9 +99,9 @@ def send_batch(rfq: dict, vendor_emails: list, delay_seconds: float = 0.5) -> di
         if not email_addr:
             continue
         try:
-            send_rfq_email_brevo(rfq, email_addr)
+            msg_id = send_rfq_email_brevo(rfq, email_addr)
             sent += 1
-            print(f"  [OK] Sent RFQ to {email_addr} ({sent}/{total})")
+            print(f"  [OK] Brevo accepted RFQ for {email_addr} (Message ID: {msg_id}) ({sent}/{total})")
         except Exception as exc:
             failed += 1
             errors.append({"email": email_addr, "reason": str(exc)})
@@ -251,7 +251,8 @@ def place_order():
             return jsonify({"error": "Server is missing BREVO_API_KEY in environment variables (.env)"}), 500
 
         try:
-            send_po_email_brevo(rfq, quote, vendor_email, po_pdf_bytes)
+            msg_id = send_po_email_brevo(rfq, quote, vendor_email, po_pdf_bytes)
+            print(f"  [OK] Brevo accepted PO for {vendor_email} (Message ID: {msg_id})")
         except Exception as exc:
             return jsonify({"error": f"Failed to send PO email to {vendor_email}: {exc}"}), 500
 
