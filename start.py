@@ -1,4 +1,4 @@
-﻿"""
+"""
 start.py
 --------
 Launches both the Frontend Web Server (port 8000) and the
@@ -13,6 +13,12 @@ import signal
 import subprocess
 import sys
 import time
+
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
 
 FRONTEND_PORT = 8000
 BACKEND_PORT = 5000
