@@ -13,18 +13,16 @@ Requirements:
 """
 
 import argparse
+import base64
 import io
+import os
 import re
-import smtplib
 import sys
 import time
 from datetime import date
-from email.mime.application import MIMEApplication
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
 
+import requests
 from dotenv import load_dotenv
-import os
 from supabase import create_client
 
 # reportlab for PDF generation
@@ -38,13 +36,16 @@ from reportlab.lib.enums import TA_LEFT, TA_CENTER, TA_RIGHT
 # ── Load credentials from .env ─────────────────────────────────────────────────
 load_dotenv()
 
-EMAIL_ADDRESS  = os.getenv("EMAIL_ADDRESS")
-EMAIL_PASSWORD = os.getenv("EMAIL_APP_PASSWORD")   # Gmail App Password, NOT your account password
-SUPABASE_URL   = os.getenv("SUPABASE_URL", "https://jhsyqlquulhlvyvtthtd.supabase.co")
-SUPABASE_KEY   = os.getenv("SUPABASE_KEY", "sb_publishable_OPNQ0_yz4BvigeFV3WZVaw_EQkoOYrh")
+EMAIL_ADDRESS      = os.getenv("EMAIL_ADDRESS")
+EMAIL_PASSWORD     = os.getenv("EMAIL_APP_PASSWORD")   # Gmail App Password (used for local SMTP fallback)
+SUPABASE_URL       = os.getenv("SUPABASE_URL", "https://jhsyqlquulhlvyvtthtd.supabase.co")
+SUPABASE_KEY       = os.getenv("SUPABASE_KEY", "sb_publishable_OPNQ0_yz4BvigeFV3WZVaw_EQkoOYrh")
 
-SMTP_HOST = "smtp.gmail.com"
-SMTP_PORT = 587
+# Brevo HTTP API configuration (used on Render and cloud platforms to avoid blocked SMTP ports)
+BREVO_API_URL      = "https://api.brevo.com/v3/smtp/email"
+BREVO_API_KEY      = os.getenv("BREVO_API_KEY")
+BREVO_SENDER_EMAIL = os.getenv("BREVO_SENDER_EMAIL") or os.getenv("EMAIL_ADDRESS")
+BREVO_SENDER_NAME  = os.getenv("BREVO_SENDER_NAME", "Procurement Team")
 
 
 def get_supabase():
@@ -355,12 +356,11 @@ def generate_rfq_pdf(rfq: dict) -> bytes:
 
 
 
-def build_email(rfq: dict, recipient: str) -> MIMEMultipart:
+def get_rfq_email_content(rfq: dict, recipient: str = "") -> dict:
     """
-    Compose a plain-text + HTML email for one vendor,
-    with a PDF version of the RFQ attached.
+    Generate subject, plain body, html body, and attached PDF for an RFQ email.
+    Used by both Brevo HTTP API and MIME email builders.
     """
-
     subject = f"Request for Quotation - RFQ-{rfq['id']}: {rfq['item']}"
 
     specs = rfq.get("specifications")
@@ -415,35 +415,88 @@ Delivery Days: &lt;number of days&gt;</pre>
 </body></html>
 """
 
-    # Outer container: mixed (text + attachment)
-    msg = MIMEMultipart("mixed")
-    msg["Subject"] = subject
-    msg["From"]    = EMAIL_ADDRESS
-    msg["To"]      = recipient
+    pdf_bytes = generate_rfq_pdf(rfq)
+    filename = f"RFQ-{rfq['id']}.pdf"
 
-    # Inner alternative part: plain + html
-    alt = MIMEMultipart("alternative")
-    alt.attach(MIMEText(plain_body, "plain"))
-    alt.attach(MIMEText(html_body,  "html"))
-    msg.attach(alt)
+    return {
+        "subject": subject,
+        "plain_body": plain_body,
+        "html_body": html_body,
+        "pdf_bytes": pdf_bytes,
+        "filename": filename,
+    }
 
-    # Generate and attach the PDF
+
+
+def send_email_via_brevo(recipient: str, subject: str, text_body: str, html_body: str, pdf_bytes: bytes, filename: str) -> None:
+    api_key = os.getenv("BREVO_API_KEY")
+    if not api_key:
+        raise ValueError("BREVO_API_KEY is missing from environment variables. Please set BREVO_API_KEY.")
+
+    sender_email = os.getenv("BREVO_SENDER_EMAIL") or os.getenv("EMAIL_ADDRESS")
+    if not sender_email:
+        raise ValueError("BREVO_SENDER_EMAIL (or EMAIL_ADDRESS) is missing from environment variables. Please set BREVO_SENDER_EMAIL.")
+
+    sender_name = os.getenv("BREVO_SENDER_NAME", "Procurement Team")
+
+    payload = {
+        "sender": {
+            "name": sender_name,
+            "email": sender_email.strip(),
+        },
+        "to": [
+            {"email": recipient.strip()}
+        ],
+        "subject": subject,
+        "htmlContent": html_body,
+        "textContent": text_body,
+    }
+
+    reply_to = os.getenv("EMAIL_ADDRESS") or sender_email
+    if reply_to and reply_to.strip():
+        payload["replyTo"] = {"email": reply_to.strip()}
+
+    if pdf_bytes and filename:
+        payload["attachment"] = [
+            {
+                "name": filename,
+                "content": base64.b64encode(pdf_bytes).decode("utf-8"),
+            }
+        ]
+
+    headers = {
+        "accept": "application/json",
+        "api-key": api_key.strip(),
+        "content-type": "application/json",
+    }
+
+    response = None
     try:
-        pdf_bytes = generate_rfq_pdf(rfq)
-        pdf_part = MIMEApplication(pdf_bytes, _subtype="pdf")
-        filename = f"RFQ-{rfq['id']}.pdf"
-        pdf_part.add_header(
-            "Content-Disposition",
-            "attachment",
-            filename=filename
-        )
-        pdf_part.set_param("name", filename)
-        msg.attach(pdf_part)
-        print(f"  [PDF] Attached {filename} ({len(pdf_bytes):,} bytes)")
-    except Exception as exc:
-        print(f"  [WARN] Could not generate PDF attachment: {exc}")
+        response = requests.post(BREVO_API_URL, json=payload, headers=headers, timeout=30)
+        response.raise_for_status()
+    except requests.exceptions.RequestException as exc:
+        details = ""
+        if response is not None:
+            try:
+                err_data = response.json()
+                msg = err_data.get("message") or response.text
+                details = f" - Brevo error: {msg}"
+            except Exception:
+                if response.text:
+                    details = f" - Brevo error: {response.text[:300]}"
+        raise RuntimeError(f"Brevo API request failed: {exc}{details}") from exc
 
-    return msg
+
+def send_rfq_email_brevo(rfq: dict, recipient: str) -> None:
+    content = get_rfq_email_content(rfq, recipient)
+    send_email_via_brevo(
+        recipient=recipient,
+        subject=content["subject"],
+        text_body=content["plain_body"],
+        html_body=content["html_body"],
+        pdf_bytes=content["pdf_bytes"],
+        filename=content["filename"]
+    )
 
 
 def generate_po_pdf(rfq: dict, quote: dict, vendor_email: str = "") -> bytes:
@@ -751,8 +804,8 @@ def generate_po_pdf(rfq: dict, quote: dict, vendor_email: str = "") -> bytes:
     return pdf_bytes
 
 
-def build_po_email(rfq: dict, quote: dict, recipient: str, po_pdf_bytes: bytes) -> MIMEMultipart:
-    """Build an official Purchase Order confirmation email with attached PO PDF."""
+def send_po_email_brevo(rfq: dict, quote: dict, recipient: str, po_pdf_bytes: bytes) -> None:
+    """Build and send an official Purchase Order confirmation email with attached PO PDF via Brevo."""
     po_ref = f"PO-{rfq['id']}"
     subject = f"Purchase Order Confirmation - {po_ref}: {rfq['item']}"
     raw_vendor = quote.get("vendor_name", "Vendor")
@@ -831,55 +884,36 @@ def build_po_email(rfq: dict, quote: dict, recipient: str, po_pdf_bytes: bytes) 
 </html>
 """
 
-    root = MIMEMultipart("mixed")
-    root["From"] = EMAIL_ADDRESS
-    root["To"] = recipient
-    root["Subject"] = subject
-
-    alt = MIMEMultipart("alternative")
-    alt.attach(MIMEText(text_body, "plain", "utf-8"))
-    alt.attach(MIMEText(html_body, "html", "utf-8"))
-    root.attach(alt)
-
-    pdf_part = MIMEApplication(po_pdf_bytes, _subtype="pdf")
     filename = f"{po_ref}.pdf"
-    pdf_part.add_header("Content-Disposition", "attachment", filename=filename)
-    pdf_part.set_param("name", filename)
-    root.attach(pdf_part)
-
-    return root
+    send_email_via_brevo(
+        recipient=recipient,
+        subject=subject,
+        text_body=text_body,
+        html_body=html_body,
+        pdf_bytes=po_pdf_bytes,
+        filename=filename
+    )
 
 
 def send_emails(rfq: dict, vendors: list) -> None:
-    """Open one SMTP connection and deliver to every vendor address."""
-    if not EMAIL_ADDRESS or not EMAIL_PASSWORD:
-        sys.exit(
-            "ERROR: EMAIL_ADDRESS and EMAIL_APP_PASSWORD must be set in your .env file.\n"
-            "       Use a Gmail App Password (not your regular account password).\n"
-            "       Enable it at: https://myaccount.google.com/apppasswords"
-        )
+    """Send RFQ email to every vendor address via Brevo HTTP API."""
+    if not os.getenv("BREVO_API_KEY"):
+        sys.exit("ERROR: BREVO_API_KEY must be set in your .env file.")
 
-    print(f"\nConnecting to {SMTP_HOST}:{SMTP_PORT} ...")
-    with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
-        server.ehlo()
-        server.starttls()
-        server.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
-        print("Logged in successfully.\n")
+    print(f"\nSending via Brevo API ...")
+    total = len(vendors)
+    for i, vendor_email in enumerate(vendors):
+        vendor_email = vendor_email.strip()
+        if not vendor_email:
+            continue
+        try:
+            send_rfq_email_brevo(rfq, vendor_email)
+            print(f"  [OK]  Sent to {vendor_email} ({i+1}/{total})")
+        except Exception as exc:
+            print(f"  [ERR] Failed to send to {vendor_email}: {exc}")
 
-        total = len(vendors)
-        for i, vendor_email in enumerate(vendors):
-            vendor_email = vendor_email.strip()
-            if not vendor_email:
-                continue
-            try:
-                msg = build_email(rfq, vendor_email)
-                server.sendmail(EMAIL_ADDRESS, vendor_email, msg.as_string())
-                print(f"  [OK]  Sent to {vendor_email} ({i+1}/{total})")
-            except Exception as exc:
-                print(f"  [ERR] Failed to send to {vendor_email}: {exc}")
-
-            if i < total - 1:
-                time.sleep(1.5)
+        if i < total - 1:
+            time.sleep(0.5)
 
     print("\nDone.")
 

@@ -20,7 +20,6 @@ import argparse
 import base64
 import io
 import re
-import smtplib
 import sys
 import time
 
@@ -34,10 +33,10 @@ from send_rfq_emails import (
     fetch_rfq,
     fetch_quote,
     generate_po_pdf,
-    build_po_email,
-    build_email,
+    send_po_email_brevo,
+    send_rfq_email_brevo,
     EMAIL_ADDRESS,
-    EMAIL_PASSWORD,
+    BREVO_API_KEY,
 )
 from check_vendor_replies import process_vendor_replies
 
@@ -50,60 +49,48 @@ app = Flask(__name__)
 # file://) can call this server without browser CORS errors.
 CORS(app, resources={r"/*": {"origins": "*"}})
 
-SMTP_HOST = "smtp.gmail.com"
-SMTP_PORT = 587
-
-
 # ── Helper ─────────────────────────────────────────────────────────────────────
-def send_batch(rfq: dict, vendor_emails: list, delay_seconds: float = 1.5) -> dict:
+def send_batch(rfq: dict, vendor_emails: list, delay_seconds: float = 0.5) -> dict:
     """
-    Open a single SMTP connection and send the RFQ email to every address.
+    Send the RFQ email to every address via Brevo API.
     Returns a result dict: { sent, failed, errors }.
     Skips and records failures individually — never aborts the whole batch.
-    Applies a small delay (default 1.5s) between emails to avoid triggering
-    Gmail spam / rate limits.
     """
     sent   = 0
     failed = 0
     errors = []
 
-    try:
-        smtp = smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=30)
-        smtp.ehlo()
-        smtp.starttls()
-        smtp.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
-    except Exception as exc:
-        # Can't even connect — fail fast with a clear message
+    api_key = os.getenv("BREVO_API_KEY") or BREVO_API_KEY
+    sender_email = os.getenv("BREVO_SENDER_EMAIL") or os.getenv("EMAIL_ADDRESS")
+    if not api_key:
         return {
             "sent":   0,
             "failed": len(vendor_emails),
-            "errors": [{"email": "*all*", "reason": f"SMTP connection failed: {exc}"}],
+            "errors": [{"email": "*all*", "reason": "BREVO_API_KEY is not set in environment variables."}],
+        }
+    if not sender_email:
+        return {
+            "sent":   0,
+            "failed": len(vendor_emails),
+            "errors": [{"email": "*all*", "reason": "BREVO_SENDER_EMAIL is not set in environment variables."}],
         }
 
-    try:
-        total = len(vendor_emails)
-        for i, email_addr in enumerate(vendor_emails):
-            email_addr = email_addr.strip()
-            if not email_addr:
-                continue
-            try:
-                msg = build_email(rfq, email_addr)
-                smtp.sendmail(EMAIL_ADDRESS, email_addr, msg.as_string())
-                sent += 1
-                print(f"  [OK] Sent RFQ to {email_addr} ({sent}/{total})")
-            except Exception as exc:
-                failed += 1
-                errors.append({"email": email_addr, "reason": str(exc)})
-                print(f"  [ERR] Failed sending to {email_addr}: {exc}")
-
-            # Small delay between emails to prevent triggering Gmail's spam/rate limit detection
-            if i < total - 1 and delay_seconds > 0:
-                time.sleep(delay_seconds)
-    finally:
+    total = len(vendor_emails)
+    for i, email_addr in enumerate(vendor_emails):
+        email_addr = email_addr.strip()
+        if not email_addr:
+            continue
         try:
-            smtp.quit()
-        except Exception:
-            pass
+            send_rfq_email_brevo(rfq, email_addr)
+            sent += 1
+            print(f"  [OK] Sent RFQ to {email_addr} ({sent}/{total})")
+        except Exception as exc:
+            failed += 1
+            errors.append({"email": email_addr, "reason": str(exc)})
+            print(f"  [ERR] Failed sending to {email_addr}: {exc}")
+
+        if i < total - 1 and delay_seconds > 0:
+            time.sleep(delay_seconds)
 
     return {"sent": sent, "failed": failed, "errors": errors}
 
@@ -122,12 +109,12 @@ def send_rfq():
     Body (JSON): { "rfq_id": 3, "vendors": ["a@x.com", ...] }
 
     - Fetches the RFQ from Supabase
-    - Sends the email to every vendor address in one SMTP session
+    - Sends the email to every vendor address via Brevo HTTPS API
     - Skips bad addresses, collects errors, always returns a summary
     """
-    if not EMAIL_ADDRESS or not EMAIL_PASSWORD:
+    if not (os.getenv("BREVO_API_KEY") or BREVO_API_KEY):
         return jsonify({
-            "error": "Server is missing EMAIL_ADDRESS or EMAIL_APP_PASSWORD in .env"
+            "error": "Server is missing BREVO_API_KEY in environment variables (.env)"
         }), 500
 
     data = request.get_json(silent=True)
@@ -231,7 +218,7 @@ def place_order():
             download_name=f"PO-{rfq_id}.pdf"
         )
 
-    # If action is 'email', send the PO via SMTP
+    # If action is 'email', send the PO via Brevo
     if action == "email":
         if not vendor_email:
             raw_v = quote.get("vendor_name", "")
@@ -242,17 +229,11 @@ def place_order():
         if not vendor_email or "@" not in vendor_email:
             return jsonify({"error": "A valid 'vendor_email' address is required to send confirmation email"}), 400
 
-        if not EMAIL_ADDRESS or not EMAIL_PASSWORD:
-            return jsonify({"error": "Server is missing EMAIL_ADDRESS or EMAIL_APP_PASSWORD in .env"}), 500
+        if not (os.getenv("BREVO_API_KEY") or BREVO_API_KEY):
+            return jsonify({"error": "Server is missing BREVO_API_KEY in environment variables (.env)"}), 500
 
         try:
-            msg = build_po_email(rfq, quote, vendor_email, po_pdf_bytes)
-            smtp = smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=30)
-            smtp.ehlo()
-            smtp.starttls()
-            smtp.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
-            smtp.sendmail(EMAIL_ADDRESS, vendor_email, msg.as_string())
-            smtp.quit()
+            send_po_email_brevo(rfq, quote, vendor_email, po_pdf_bytes)
         except Exception as exc:
             return jsonify({"error": f"Failed to send PO email to {vendor_email}: {exc}"}), 500
 
