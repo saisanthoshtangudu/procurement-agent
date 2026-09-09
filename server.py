@@ -19,14 +19,20 @@ Requirements:
 import argparse
 import base64
 import io
+import os
 import re
 import sys
 import time
 
+from dotenv import load_dotenv
+
+# Explicitly load .env using absolute path relative to server.py,
+# so this works regardless of which directory python is launched from.
+env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+load_dotenv(env_path)
+
 from flask import Flask, jsonify, request, send_file
 from flask_cors import CORS
-from dotenv import load_dotenv
-import os
 
 # Reuse helpers from send_rfq_emails.py and check_vendor_replies.py (same directory)
 from send_rfq_emails import (
@@ -41,13 +47,25 @@ from send_rfq_emails import (
 from check_vendor_replies import process_vendor_replies
 
 # ── App setup ──────────────────────────────────────────────────────────────────
-load_dotenv()
-
 app = Flask(__name__)
 
 # Allow requests from any origin so the webpage (e.g. localhost:8000 or
 # file://) can call this server without browser CORS errors.
 CORS(app, resources={r"/*": {"origins": "*"}})
+
+# ── Startup diagnostic (safe – values never printed) ───────────────────────────
+def _check_env():
+    keys = {
+        "BREVO_API_KEY":    os.getenv("BREVO_API_KEY"),
+        "BREVO_SENDER_EMAIL": os.getenv("BREVO_SENDER_EMAIL"),
+        "BREVO_SENDER_NAME":  os.getenv("BREVO_SENDER_NAME"),
+        "EMAIL_ADDRESS":      os.getenv("EMAIL_ADDRESS"),
+    }
+    for name, val in keys.items():
+        status = "OK" if val else "MISSING"
+        print(f"  [ENV] {name}: {status}", flush=True)
+
+_check_env()
 
 # ── Helper ─────────────────────────────────────────────────────────────────────
 def send_batch(rfq: dict, vendor_emails: list, delay_seconds: float = 0.5) -> dict:

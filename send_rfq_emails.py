@@ -34,7 +34,9 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, Tabl
 from reportlab.lib.enums import TA_LEFT, TA_CENTER, TA_RIGHT
 
 # ── Load credentials from .env ─────────────────────────────────────────────────
-load_dotenv()
+# Use abspath so this resolves correctly regardless of the launch directory.
+env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+load_dotenv(env_path)
 
 EMAIL_ADDRESS      = os.getenv("EMAIL_ADDRESS")
 EMAIL_PASSWORD     = os.getenv("EMAIL_APP_PASSWORD")   # Gmail App Password (used for local SMTP fallback)
