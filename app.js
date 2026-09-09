@@ -5,6 +5,12 @@ const SUPABASE_KEY =
 
 const db = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
+// ── Backend API base URL ────────────────────────────────
+// Change this one constant to switch between local and deployed backend.
+// Local:    const API_BASE = "http://localhost:5000";
+// Deployed: const API_BASE = "https://procurement-agent-backend.onrender.com";
+const API_BASE = "http://localhost:5000";
+
 // ── DOM Helpers ────────────────────────────────────────
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => document.querySelectorAll(sel);
@@ -254,7 +260,7 @@ $("#btn-send-vendors").addEventListener("click", async () => {
   } catch (_) {}
 
   try {
-    const resp = await fetch("https://procurement-agent-backend.onrender.com/send-rfq", {
+    const resp = await fetch(`${API_BASE}/send-rfq`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ rfq_id: lastCreatedRfqId, vendors }),
@@ -404,7 +410,7 @@ $("#btn-check-replies").addEventListener("click", async () => {
   isCheckingReplies = true;
 
   try {
-    const resp = await fetch("https://procurement-agent-backend.onrender.com/check-replies", {
+    const resp = await fetch(`${API_BASE}/check-replies`, {
       method: "POST",
     });
 
@@ -442,7 +448,7 @@ async function pollRepliesSilently() {
 
   isCheckingReplies = true;
   try {
-    const resp = await fetch("https://procurement-agent-backend.onrender.com/check-replies", {
+    const resp = await fetch(`${API_BASE}/check-replies`, {
       method: "POST",
     });
     if (!resp.ok) return;
@@ -926,7 +932,7 @@ $("#po-btn-no").addEventListener("click", async () => {
   btn.textContent = "Downloading…";
 
   try {
-    const resp = await fetch("https://procurement-agent-backend.onrender.com/place-order", {
+    const resp = await fetch(`${API_BASE}/place-order`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -973,7 +979,7 @@ $("#po-btn-yes").addEventListener("click", async () => {
   btn.textContent = "Sending PO…";
 
   try {
-    const resp = await fetch("https://procurement-agent-backend.onrender.com/place-order", {
+    const resp = await fetch(`${API_BASE}/place-order`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
