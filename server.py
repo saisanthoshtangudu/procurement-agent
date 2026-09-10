@@ -21,6 +21,7 @@ import base64
 import io
 import os
 import re
+import smtplib
 import sys
 import time
 
@@ -39,27 +40,32 @@ from send_rfq_emails import (
     fetch_rfq,
     fetch_quote,
     generate_po_pdf,
-    send_po_email_resend,
-    send_rfq_email_resend,
+    build_email,
+    build_po_email,
     EMAIL_ADDRESS,
-    RESEND_API_KEY,
+    EMAIL_PASSWORD,
+    SMTP_HOST,
+    SMTP_PORT,
 )
 from check_vendor_replies import process_vendor_replies
 
 # ── App setup ──────────────────────────────────────────────────────────────────
 app = Flask(__name__)
 
-# Allow requests from any origin so the webpage (e.g. localhost:8000 or
-# file://) can call this server without browser CORS errors.
-CORS(app, resources={r"/*": {"origins": "*"}})
+# Allow requests from any origin (including Vercel frontend and local development)
+CORS(app, resources={r"/*": {
+    "origins": "*",
+    "methods": ["GET", "POST", "OPTIONS"],
+    "allow_headers": ["Content-Type", "Authorization"]
+}})
 
 # ── Startup diagnostic (safe – values never printed) ───────────────────────────
 def _check_env():
     keys = {
-        "RESEND_API_KEY":     os.getenv("RESEND_API_KEY"),
-        "RESEND_FROM_EMAIL":  os.getenv("RESEND_FROM_EMAIL"),
-        "RESEND_FROM_NAME":   os.getenv("RESEND_FROM_NAME"),
         "EMAIL_ADDRESS":      os.getenv("EMAIL_ADDRESS"),
+        "EMAIL_APP_PASSWORD": os.getenv("EMAIL_APP_PASSWORD"),
+        "SUPABASE_URL":       os.getenv("SUPABASE_URL"),
+        "SUPABASE_KEY":       os.getenv("SUPABASE_KEY"),
     }
     for name, val in keys.items():
         status = "OK" if val else "MISSING"
@@ -68,9 +74,9 @@ def _check_env():
 _check_env()
 
 # ── Helper ─────────────────────────────────────────────────────────────────────
-def send_batch(rfq: dict, vendor_emails: list, delay_seconds: float = 0.5) -> dict:
+def send_batch(rfq: dict, vendor_emails: list, delay_seconds: float = 1.0) -> dict:
     """
-    Send the RFQ email to every address via Resend HTTPS API.
+    Send the RFQ email to every address via Gmail SMTP.
     Returns a result dict: { sent, failed, errors }.
     Skips and records failures individually — never aborts the whole batch.
     """
@@ -78,30 +84,51 @@ def send_batch(rfq: dict, vendor_emails: list, delay_seconds: float = 0.5) -> di
     failed = 0
     errors = []
 
-    api_key = os.getenv("RESEND_API_KEY") or RESEND_API_KEY
-    if not api_key:
+    email_addr_env = os.getenv("EMAIL_ADDRESS") or EMAIL_ADDRESS
+    password_env = os.getenv("EMAIL_APP_PASSWORD") or EMAIL_PASSWORD
+
+    if not email_addr_env or not password_env:
         return {
             "sent":   0,
             "failed": len(vendor_emails),
-            "errors": [{"email": "*all*", "reason": "RESEND_API_KEY is not set in environment variables."}],
+            "errors": [{"email": "*all*", "reason": "EMAIL_ADDRESS or EMAIL_APP_PASSWORD is not set in environment variables."}],
         }
 
-    total = len(vendor_emails)
-    for i, email_addr in enumerate(vendor_emails):
-        email_addr = email_addr.strip()
-        if not email_addr:
-            continue
-        try:
-            msg_id = send_rfq_email_resend(rfq, email_addr)
-            sent += 1
-            print(f"  [OK] Resend sent RFQ to {email_addr} (Message ID: {msg_id}) ({sent}/{total})")
-        except Exception as exc:
-            failed += 1
-            errors.append({"email": email_addr, "reason": str(exc)})
-            print(f"  [ERR] Failed sending to {email_addr}: {exc}")
+    try:
+        smtp = smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=30)
+        smtp.ehlo()
+        smtp.starttls()
+        smtp.login(email_addr_env, password_env)
+    except Exception as exc:
+        return {
+            "sent":   0,
+            "failed": len(vendor_emails),
+            "errors": [{"email": "*all*", "reason": f"SMTP connection failed: {exc}"}],
+        }
 
-        if i < total - 1 and delay_seconds > 0:
-            time.sleep(delay_seconds)
+    try:
+        total = len(vendor_emails)
+        for i, email_addr in enumerate(vendor_emails):
+            email_addr = email_addr.strip()
+            if not email_addr:
+                continue
+            try:
+                msg = build_email(rfq, email_addr)
+                smtp.sendmail(email_addr_env, email_addr, msg.as_string())
+                sent += 1
+                print(f"  [OK] Sent RFQ to {email_addr} ({sent}/{total})")
+            except Exception as exc:
+                failed += 1
+                errors.append({"email": email_addr, "reason": str(exc)})
+                print(f"  [ERR] Failed sending to {email_addr}: {exc}")
+
+            if i < total - 1 and delay_seconds > 0:
+                time.sleep(delay_seconds)
+    finally:
+        try:
+            smtp.quit()
+        except Exception:
+            pass
 
     return {"sent": sent, "failed": failed, "errors": errors}
 
@@ -120,12 +147,12 @@ def send_rfq():
     Body (JSON): { "rfq_id": 3, "vendors": ["a@x.com", ...] }
 
     - Fetches the RFQ from Supabase
-    - Sends the email to every vendor address via Resend HTTPS API
+    - Sends the email to every vendor address via Gmail SMTP
     - Skips bad addresses, collects errors, always returns a summary
     """
-    if not (os.getenv("RESEND_API_KEY") or RESEND_API_KEY):
+    if not (os.getenv("EMAIL_ADDRESS") and os.getenv("EMAIL_APP_PASSWORD")):
         return jsonify({
-            "error": "Server is missing RESEND_API_KEY in environment variables (.env)"
+            "error": "Server is missing EMAIL_ADDRESS or EMAIL_APP_PASSWORD in environment variables (.env)"
         }), 500
 
     data = request.get_json(silent=True)
@@ -229,7 +256,7 @@ def place_order():
             download_name=f"PO-{rfq_id}.pdf"
         )
 
-    # If action is 'email', send the PO via Brevo
+    # If action is 'email', send the PO via Gmail SMTP
     if action == "email":
         if not vendor_email:
             raw_v = quote.get("vendor_name", "")
@@ -240,12 +267,20 @@ def place_order():
         if not vendor_email or "@" not in vendor_email:
             return jsonify({"error": "A valid 'vendor_email' address is required to send confirmation email"}), 400
 
-        if not (os.getenv("RESEND_API_KEY") or RESEND_API_KEY):
-            return jsonify({"error": "Server is missing RESEND_API_KEY in environment variables (.env)"}), 500
+        email_addr_env = os.getenv("EMAIL_ADDRESS") or EMAIL_ADDRESS
+        password_env = os.getenv("EMAIL_APP_PASSWORD") or EMAIL_PASSWORD
+
+        if not email_addr_env or not password_env:
+            return jsonify({"error": "Server is missing EMAIL_ADDRESS or EMAIL_APP_PASSWORD in environment variables (.env)"}), 500
 
         try:
-            msg_id = send_po_email_resend(rfq, quote, vendor_email, po_pdf_bytes)
-            print(f"  [OK] Resend sent PO to {vendor_email} (Message ID: {msg_id})")
+            msg = build_po_email(rfq, quote, vendor_email, po_pdf_bytes)
+            with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=30) as smtp:
+                smtp.ehlo()
+                smtp.starttls()
+                smtp.login(email_addr_env, password_env)
+                smtp.sendmail(email_addr_env, vendor_email, msg.as_string())
+            print(f"  [OK] Sent PO to {vendor_email} via Gmail SMTP")
         except Exception as exc:
             return jsonify({"error": f"Failed to send PO email to {vendor_email}: {exc}"}), 500
 

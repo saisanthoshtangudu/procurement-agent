@@ -37,8 +37,8 @@ def main():
     print(f"  📁 Directory   : {PROJECT_DIR}")
     print(f"  🌐 Web App     : http://localhost:{FRONTEND_PORT}")
     print(f"  ⚙️  Flask API   : http://localhost:{BACKEND_PORT}")
-    resend_loaded = "Configured" if os.getenv("RESEND_API_KEY") else "Missing"
-    print(f"  📧 Resend API  : {resend_loaded}")
+    smtp_loaded = "Configured" if os.getenv("EMAIL_ADDRESS") and os.getenv("EMAIL_APP_PASSWORD") else "Missing"
+    print(f"  📧 Gmail SMTP  : {smtp_loaded}")
     print("-" * 60)
     print("  Starting servers...")
 

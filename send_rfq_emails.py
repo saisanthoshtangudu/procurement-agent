@@ -13,15 +13,17 @@ Requirements:
 """
 
 import argparse
-import base64
 import io
 import os
 import re
+import smtplib
 import sys
 import time
 from datetime import date
+from email.mime.application import MIMEApplication
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 
-import requests
 from dotenv import load_dotenv
 from supabase import create_client
 
@@ -39,15 +41,13 @@ env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
 load_dotenv(env_path)
 
 EMAIL_ADDRESS      = os.getenv("EMAIL_ADDRESS")
-EMAIL_PASSWORD     = os.getenv("EMAIL_APP_PASSWORD")   # Gmail App Password (used for local SMTP fallback)
+EMAIL_PASSWORD     = os.getenv("EMAIL_APP_PASSWORD")   # Gmail App Password (NOT your regular password)
 SUPABASE_URL       = os.getenv("SUPABASE_URL", "https://jhsyqlquulhlvyvtthtd.supabase.co")
 SUPABASE_KEY       = os.getenv("SUPABASE_KEY", "sb_publishable_OPNQ0_yz4BvigeFV3WZVaw_EQkoOYrh")
 
-# Resend HTTPS API configuration (used on Render and cloud platforms to avoid blocked SMTP ports)
-RESEND_API_URL    = "https://api.resend.com/emails"
-RESEND_API_KEY    = os.getenv("RESEND_API_KEY")
-RESEND_FROM_EMAIL = os.getenv("RESEND_FROM_EMAIL", "onboarding@resend.dev")
-RESEND_FROM_NAME  = os.getenv("RESEND_FROM_NAME", "ProcurementAgent")
+# Gmail SMTP configuration for outbound email dispatch
+SMTP_HOST = "smtp.gmail.com"
+SMTP_PORT = 587
 
 
 def get_supabase():
@@ -430,75 +430,47 @@ Delivery Days: &lt;number of days&gt;</pre>
 
 
 
-def send_email_via_resend(recipient: str, subject: str, text_body: str, html_body: str, pdf_bytes: bytes, filename: str) -> str:
-    api_key = os.getenv("RESEND_API_KEY")
-    if not api_key:
-        raise ValueError("RESEND_API_KEY is missing from environment variables. Please set RESEND_API_KEY.")
-
-    from_email = os.getenv("RESEND_FROM_EMAIL", "onboarding@resend.dev").strip()
-    from_name = os.getenv("RESEND_FROM_NAME", "ProcurementAgent").strip()
-    from_header = f"{from_name} <{from_email}>" if from_name else from_email
-
-    payload = {
-        "from": from_header,
-        "to": [recipient.strip()],
-        "subject": subject,
-        "html": html_body,
-        "text": text_body,
-    }
-
-    reply_to = os.getenv("EMAIL_ADDRESS")
-    if reply_to and reply_to.strip():
-        payload["reply_to"] = reply_to.strip()
-
-    if pdf_bytes and filename:
-        payload["attachments"] = [
-            {
-                "filename": filename,
-                "content": base64.b64encode(pdf_bytes).decode("utf-8"),
-            }
-        ]
-
-    headers = {
-        "Authorization": f"Bearer {api_key.strip()}",
-        "Content-Type": "application/json",
-        "User-Agent": "ProcurementAgent/1.0",
-    }
-
-    response = None
-    try:
-        response = requests.post(RESEND_API_URL, json=payload, headers=headers, timeout=30)
-        response.raise_for_status()
-        data = response.json() if response.text else {}
-        return data.get("id", "")
-    except requests.exceptions.RequestException as exc:
-        details = ""
-        if response is not None:
-            try:
-                err_data = response.json()
-                msg = err_data.get("message") or response.text
-                details = f" - Resend error: {msg}"
-            except Exception:
-                if response.text:
-                    details = f" - Resend error: {response.text[:300]}"
-        raise RuntimeError(f"Resend API request failed: {exc}{details}") from exc
-
-
-def send_rfq_email_resend(rfq: dict, recipient: str) -> str:
+def build_email(rfq: dict, recipient: str) -> MIMEMultipart:
+    """Build a multipart email containing text, HTML, and attached RFQ PDF."""
     content = get_rfq_email_content(rfq, recipient)
-    return send_email_via_resend(
-        recipient=recipient,
-        subject=content["subject"],
-        text_body=content["plain_body"],
-        html_body=content["html_body"],
-        pdf_bytes=content["pdf_bytes"],
-        filename=content["filename"]
-    )
+
+    root = MIMEMultipart("mixed")
+    root["From"] = EMAIL_ADDRESS
+    root["To"] = recipient
+    root["Subject"] = content["subject"]
+    if EMAIL_ADDRESS:
+        root["Reply-To"] = EMAIL_ADDRESS
+
+    alt = MIMEMultipart("alternative")
+    alt.attach(MIMEText(content["plain_body"], "plain", "utf-8"))
+    alt.attach(MIMEText(content["html_body"], "html", "utf-8"))
+    root.attach(alt)
+
+    pdf_part = MIMEApplication(content["pdf_bytes"], _subtype="pdf")
+    filename = content["filename"]
+    pdf_part.add_header("Content-Disposition", "attachment", filename=filename)
+    pdf_part.set_param("name", filename)
+    root.attach(pdf_part)
+
+    return root
 
 
-# Compatibility alias
-send_email_via_brevo = send_email_via_resend
-send_rfq_email_brevo = send_rfq_email_resend
+def send_rfq_email(rfq: dict, recipient: str) -> None:
+    """Send an RFQ email to a single recipient using Gmail SMTP."""
+    if not EMAIL_ADDRESS or not EMAIL_PASSWORD:
+        raise ValueError("EMAIL_ADDRESS and EMAIL_APP_PASSWORD must be set in your .env file.")
+
+    msg = build_email(rfq, recipient)
+    with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=30) as server:
+        server.ehlo()
+        server.starttls()
+        server.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
+        server.sendmail(EMAIL_ADDRESS, recipient, msg.as_string())
+
+
+# Compatibility aliases
+send_rfq_email_resend = send_rfq_email
+send_rfq_email_brevo = send_rfq_email
 
 
 def generate_po_pdf(rfq: dict, quote: dict, vendor_email: str = "") -> bytes:
@@ -806,8 +778,8 @@ def generate_po_pdf(rfq: dict, quote: dict, vendor_email: str = "") -> bytes:
     return pdf_bytes
 
 
-def send_po_email_resend(rfq: dict, quote: dict, recipient: str, po_pdf_bytes: bytes) -> str:
-    """Build and send an official Purchase Order confirmation email with attached PO PDF via Resend."""
+def build_po_email(rfq: dict, quote: dict, recipient: str, po_pdf_bytes: bytes) -> MIMEMultipart:
+    """Build an official Purchase Order confirmation email with attached PO PDF."""
     po_ref = f"PO-{rfq['id']}"
     subject = f"Purchase Order Confirmation - {po_ref}: {rfq['item']}"
     raw_vendor = quote.get("vendor_name", "Vendor")
@@ -886,40 +858,75 @@ def send_po_email_resend(rfq: dict, quote: dict, recipient: str, po_pdf_bytes: b
 </html>
 """
 
+    root = MIMEMultipart("mixed")
+    root["From"] = EMAIL_ADDRESS
+    root["To"] = recipient
+    root["Subject"] = subject
+    if EMAIL_ADDRESS:
+        root["Reply-To"] = EMAIL_ADDRESS
+
+    alt = MIMEMultipart("alternative")
+    alt.attach(MIMEText(text_body, "plain", "utf-8"))
+    alt.attach(MIMEText(html_body, "html", "utf-8"))
+    root.attach(alt)
+
+    pdf_part = MIMEApplication(po_pdf_bytes, _subtype="pdf")
     filename = f"{po_ref}.pdf"
-    return send_email_via_resend(
-        recipient=recipient,
-        subject=subject,
-        text_body=text_body,
-        html_body=html_body,
-        pdf_bytes=po_pdf_bytes,
-        filename=filename
-    )
+    pdf_part.add_header("Content-Disposition", "attachment", filename=filename)
+    pdf_part.set_param("name", filename)
+    root.attach(pdf_part)
+
+    return root
 
 
-# Compatibility alias
-send_po_email_brevo = send_po_email_resend
+def send_po_email(rfq: dict, quote: dict, recipient: str, po_pdf_bytes: bytes) -> None:
+    """Send an official Purchase Order confirmation email with attached PO PDF via Gmail SMTP."""
+    if not EMAIL_ADDRESS or not EMAIL_PASSWORD:
+        raise ValueError("EMAIL_ADDRESS and EMAIL_APP_PASSWORD must be set in your .env file.")
+
+    msg = build_po_email(rfq, quote, recipient, po_pdf_bytes)
+    with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=30) as server:
+        server.ehlo()
+        server.starttls()
+        server.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
+        server.sendmail(EMAIL_ADDRESS, recipient, msg.as_string())
+
+
+# Compatibility aliases
+send_po_email_resend = send_po_email
+send_po_email_brevo = send_po_email
 
 
 def send_emails(rfq: dict, vendors: list) -> None:
-    """Send RFQ email to every vendor address via Resend HTTPS API."""
-    if not os.getenv("RESEND_API_KEY"):
-        sys.exit("ERROR: RESEND_API_KEY must be set in your .env file.")
+    """Open one SMTP connection and deliver to every vendor address."""
+    if not EMAIL_ADDRESS or not EMAIL_PASSWORD:
+        sys.exit(
+            "ERROR: EMAIL_ADDRESS and EMAIL_APP_PASSWORD must be set in your .env file.\n"
+            "       Use a Gmail App Password (not your regular account password).\n"
+            "       Enable it at: https://myaccount.google.com/apppasswords"
+        )
 
-    print(f"\nSending via Resend API ...")
-    total = len(vendors)
-    for i, vendor_email in enumerate(vendors):
-        vendor_email = vendor_email.strip()
-        if not vendor_email:
-            continue
-        try:
-            msg_id = send_rfq_email_resend(rfq, vendor_email)
-            print(f"  [OK]  Sent to {vendor_email} (ID: {msg_id}) ({i+1}/{total})")
-        except Exception as exc:
-            print(f"  [ERR] Failed to send to {vendor_email}: {exc}")
+    print(f"\nConnecting to {SMTP_HOST}:{SMTP_PORT} ...")
+    with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=30) as server:
+        server.ehlo()
+        server.starttls()
+        server.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
+        print("Logged in successfully.\n")
 
-        if i < total - 1:
-            time.sleep(0.5)
+        total = len(vendors)
+        for i, vendor_email in enumerate(vendors):
+            vendor_email = vendor_email.strip()
+            if not vendor_email:
+                continue
+            try:
+                msg = build_email(rfq, vendor_email)
+                server.sendmail(EMAIL_ADDRESS, vendor_email, msg.as_string())
+                print(f"  [OK]  Sent to {vendor_email} ({i+1}/{total})")
+            except Exception as exc:
+                print(f"  [ERR] Failed to send to {vendor_email}: {exc}")
+
+            if i < total - 1:
+                time.sleep(1.0)
 
     print("\nDone.")
 
