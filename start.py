@@ -37,8 +37,8 @@ def main():
     print(f"  📁 Directory   : {PROJECT_DIR}")
     print(f"  🌐 Web App     : http://localhost:{FRONTEND_PORT}")
     print(f"  ⚙️  Flask API   : http://localhost:{BACKEND_PORT}")
-    brevo_loaded = "Configured" if os.getenv("BREVO_API_KEY") else "Missing"
-    print(f"  📧 Brevo API   : {brevo_loaded}")
+    resend_loaded = "Configured" if os.getenv("RESEND_API_KEY") else "Missing"
+    print(f"  📧 Resend API  : {resend_loaded}")
     print("-" * 60)
     print("  Starting servers...")
 

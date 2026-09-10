@@ -39,10 +39,10 @@ from send_rfq_emails import (
     fetch_rfq,
     fetch_quote,
     generate_po_pdf,
-    send_po_email_brevo,
-    send_rfq_email_brevo,
+    send_po_email_resend,
+    send_rfq_email_resend,
     EMAIL_ADDRESS,
-    BREVO_API_KEY,
+    RESEND_API_KEY,
 )
 from check_vendor_replies import process_vendor_replies
 
@@ -56,9 +56,9 @@ CORS(app, resources={r"/*": {"origins": "*"}})
 # ── Startup diagnostic (safe – values never printed) ───────────────────────────
 def _check_env():
     keys = {
-        "BREVO_API_KEY":    os.getenv("BREVO_API_KEY"),
-        "BREVO_SENDER_EMAIL": os.getenv("BREVO_SENDER_EMAIL"),
-        "BREVO_SENDER_NAME":  os.getenv("BREVO_SENDER_NAME"),
+        "RESEND_API_KEY":     os.getenv("RESEND_API_KEY"),
+        "RESEND_FROM_EMAIL":  os.getenv("RESEND_FROM_EMAIL"),
+        "RESEND_FROM_NAME":   os.getenv("RESEND_FROM_NAME"),
         "EMAIL_ADDRESS":      os.getenv("EMAIL_ADDRESS"),
     }
     for name, val in keys.items():
@@ -70,7 +70,7 @@ _check_env()
 # ── Helper ─────────────────────────────────────────────────────────────────────
 def send_batch(rfq: dict, vendor_emails: list, delay_seconds: float = 0.5) -> dict:
     """
-    Send the RFQ email to every address via Brevo API.
+    Send the RFQ email to every address via Resend HTTPS API.
     Returns a result dict: { sent, failed, errors }.
     Skips and records failures individually — never aborts the whole batch.
     """
@@ -78,19 +78,12 @@ def send_batch(rfq: dict, vendor_emails: list, delay_seconds: float = 0.5) -> di
     failed = 0
     errors = []
 
-    api_key = os.getenv("BREVO_API_KEY") or BREVO_API_KEY
-    sender_email = os.getenv("BREVO_SENDER_EMAIL") or os.getenv("EMAIL_ADDRESS")
+    api_key = os.getenv("RESEND_API_KEY") or RESEND_API_KEY
     if not api_key:
         return {
             "sent":   0,
             "failed": len(vendor_emails),
-            "errors": [{"email": "*all*", "reason": "BREVO_API_KEY is not set in environment variables."}],
-        }
-    if not sender_email:
-        return {
-            "sent":   0,
-            "failed": len(vendor_emails),
-            "errors": [{"email": "*all*", "reason": "BREVO_SENDER_EMAIL is not set in environment variables."}],
+            "errors": [{"email": "*all*", "reason": "RESEND_API_KEY is not set in environment variables."}],
         }
 
     total = len(vendor_emails)
@@ -99,9 +92,9 @@ def send_batch(rfq: dict, vendor_emails: list, delay_seconds: float = 0.5) -> di
         if not email_addr:
             continue
         try:
-            msg_id = send_rfq_email_brevo(rfq, email_addr)
+            msg_id = send_rfq_email_resend(rfq, email_addr)
             sent += 1
-            print(f"  [OK] Brevo accepted RFQ for {email_addr} (Message ID: {msg_id}) ({sent}/{total})")
+            print(f"  [OK] Resend sent RFQ to {email_addr} (Message ID: {msg_id}) ({sent}/{total})")
         except Exception as exc:
             failed += 1
             errors.append({"email": email_addr, "reason": str(exc)})
@@ -127,12 +120,12 @@ def send_rfq():
     Body (JSON): { "rfq_id": 3, "vendors": ["a@x.com", ...] }
 
     - Fetches the RFQ from Supabase
-    - Sends the email to every vendor address via Brevo HTTPS API
+    - Sends the email to every vendor address via Resend HTTPS API
     - Skips bad addresses, collects errors, always returns a summary
     """
-    if not (os.getenv("BREVO_API_KEY") or BREVO_API_KEY):
+    if not (os.getenv("RESEND_API_KEY") or RESEND_API_KEY):
         return jsonify({
-            "error": "Server is missing BREVO_API_KEY in environment variables (.env)"
+            "error": "Server is missing RESEND_API_KEY in environment variables (.env)"
         }), 500
 
     data = request.get_json(silent=True)
@@ -247,12 +240,12 @@ def place_order():
         if not vendor_email or "@" not in vendor_email:
             return jsonify({"error": "A valid 'vendor_email' address is required to send confirmation email"}), 400
 
-        if not (os.getenv("BREVO_API_KEY") or BREVO_API_KEY):
-            return jsonify({"error": "Server is missing BREVO_API_KEY in environment variables (.env)"}), 500
+        if not (os.getenv("RESEND_API_KEY") or RESEND_API_KEY):
+            return jsonify({"error": "Server is missing RESEND_API_KEY in environment variables (.env)"}), 500
 
         try:
-            msg_id = send_po_email_brevo(rfq, quote, vendor_email, po_pdf_bytes)
-            print(f"  [OK] Brevo accepted PO for {vendor_email} (Message ID: {msg_id})")
+            msg_id = send_po_email_resend(rfq, quote, vendor_email, po_pdf_bytes)
+            print(f"  [OK] Resend sent PO to {vendor_email} (Message ID: {msg_id})")
         except Exception as exc:
             return jsonify({"error": f"Failed to send PO email to {vendor_email}: {exc}"}), 500
 

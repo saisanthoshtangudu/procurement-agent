@@ -43,11 +43,11 @@ EMAIL_PASSWORD     = os.getenv("EMAIL_APP_PASSWORD")   # Gmail App Password (use
 SUPABASE_URL       = os.getenv("SUPABASE_URL", "https://jhsyqlquulhlvyvtthtd.supabase.co")
 SUPABASE_KEY       = os.getenv("SUPABASE_KEY", "sb_publishable_OPNQ0_yz4BvigeFV3WZVaw_EQkoOYrh")
 
-# Brevo HTTP API configuration (used on Render and cloud platforms to avoid blocked SMTP ports)
-BREVO_API_URL      = "https://api.brevo.com/v3/smtp/email"
-BREVO_API_KEY      = os.getenv("BREVO_API_KEY")
-BREVO_SENDER_EMAIL = os.getenv("BREVO_SENDER_EMAIL") or os.getenv("EMAIL_ADDRESS")
-BREVO_SENDER_NAME  = os.getenv("BREVO_SENDER_NAME", "Procurement Team")
+# Resend HTTPS API configuration (used on Render and cloud platforms to avoid blocked SMTP ports)
+RESEND_API_URL    = "https://api.resend.com/emails"
+RESEND_API_KEY    = os.getenv("RESEND_API_KEY")
+RESEND_FROM_EMAIL = os.getenv("RESEND_FROM_EMAIL", "onboarding@resend.dev")
+RESEND_FROM_NAME  = os.getenv("RESEND_FROM_NAME", "ProcurementAgent")
 
 
 def get_supabase():
@@ -430,70 +430,63 @@ Delivery Days: &lt;number of days&gt;</pre>
 
 
 
-def send_email_via_brevo(recipient: str, subject: str, text_body: str, html_body: str, pdf_bytes: bytes, filename: str) -> None:
-    api_key = os.getenv("BREVO_API_KEY")
+def send_email_via_resend(recipient: str, subject: str, text_body: str, html_body: str, pdf_bytes: bytes, filename: str) -> str:
+    api_key = os.getenv("RESEND_API_KEY")
     if not api_key:
-        raise ValueError("BREVO_API_KEY is missing from environment variables. Please set BREVO_API_KEY.")
+        raise ValueError("RESEND_API_KEY is missing from environment variables. Please set RESEND_API_KEY.")
 
-    sender_email = os.getenv("BREVO_SENDER_EMAIL") or os.getenv("EMAIL_ADDRESS")
-    if not sender_email:
-        raise ValueError("BREVO_SENDER_EMAIL (or EMAIL_ADDRESS) is missing from environment variables. Please set BREVO_SENDER_EMAIL.")
-
-    sender_name = os.getenv("BREVO_SENDER_NAME", "Procurement Team")
+    from_email = os.getenv("RESEND_FROM_EMAIL", "onboarding@resend.dev").strip()
+    from_name = os.getenv("RESEND_FROM_NAME", "ProcurementAgent").strip()
+    from_header = f"{from_name} <{from_email}>" if from_name else from_email
 
     payload = {
-        "sender": {
-            "name": sender_name,
-            "email": sender_email.strip(),
-        },
-        "to": [
-            {"email": recipient.strip()}
-        ],
+        "from": from_header,
+        "to": [recipient.strip()],
         "subject": subject,
-        "htmlContent": html_body,
-        "textContent": text_body,
+        "html": html_body,
+        "text": text_body,
     }
 
-    reply_to = os.getenv("EMAIL_ADDRESS") or sender_email
+    reply_to = os.getenv("EMAIL_ADDRESS")
     if reply_to and reply_to.strip():
-        payload["replyTo"] = {"email": reply_to.strip()}
+        payload["reply_to"] = reply_to.strip()
 
     if pdf_bytes and filename:
-        payload["attachment"] = [
+        payload["attachments"] = [
             {
-                "name": filename,
+                "filename": filename,
                 "content": base64.b64encode(pdf_bytes).decode("utf-8"),
             }
         ]
 
     headers = {
-        "accept": "application/json",
-        "api-key": api_key.strip(),
-        "content-type": "application/json",
+        "Authorization": f"Bearer {api_key.strip()}",
+        "Content-Type": "application/json",
+        "User-Agent": "ProcurementAgent/1.0",
     }
 
     response = None
     try:
-        response = requests.post(BREVO_API_URL, json=payload, headers=headers, timeout=30)
+        response = requests.post(RESEND_API_URL, json=payload, headers=headers, timeout=30)
         response.raise_for_status()
         data = response.json() if response.text else {}
-        return data.get("messageId", "")
+        return data.get("id", "")
     except requests.exceptions.RequestException as exc:
         details = ""
         if response is not None:
             try:
                 err_data = response.json()
                 msg = err_data.get("message") or response.text
-                details = f" - Brevo error: {msg}"
+                details = f" - Resend error: {msg}"
             except Exception:
                 if response.text:
-                    details = f" - Brevo error: {response.text[:300]}"
-        raise RuntimeError(f"Brevo API request failed: {exc}{details}") from exc
+                    details = f" - Resend error: {response.text[:300]}"
+        raise RuntimeError(f"Resend API request failed: {exc}{details}") from exc
 
 
-def send_rfq_email_brevo(rfq: dict, recipient: str) -> str:
+def send_rfq_email_resend(rfq: dict, recipient: str) -> str:
     content = get_rfq_email_content(rfq, recipient)
-    return send_email_via_brevo(
+    return send_email_via_resend(
         recipient=recipient,
         subject=content["subject"],
         text_body=content["plain_body"],
@@ -501,6 +494,11 @@ def send_rfq_email_brevo(rfq: dict, recipient: str) -> str:
         pdf_bytes=content["pdf_bytes"],
         filename=content["filename"]
     )
+
+
+# Compatibility alias
+send_email_via_brevo = send_email_via_resend
+send_rfq_email_brevo = send_rfq_email_resend
 
 
 def generate_po_pdf(rfq: dict, quote: dict, vendor_email: str = "") -> bytes:
@@ -808,8 +806,8 @@ def generate_po_pdf(rfq: dict, quote: dict, vendor_email: str = "") -> bytes:
     return pdf_bytes
 
 
-def send_po_email_brevo(rfq: dict, quote: dict, recipient: str, po_pdf_bytes: bytes) -> None:
-    """Build and send an official Purchase Order confirmation email with attached PO PDF via Brevo."""
+def send_po_email_resend(rfq: dict, quote: dict, recipient: str, po_pdf_bytes: bytes) -> str:
+    """Build and send an official Purchase Order confirmation email with attached PO PDF via Resend."""
     po_ref = f"PO-{rfq['id']}"
     subject = f"Purchase Order Confirmation - {po_ref}: {rfq['item']}"
     raw_vendor = quote.get("vendor_name", "Vendor")
@@ -889,7 +887,7 @@ def send_po_email_brevo(rfq: dict, quote: dict, recipient: str, po_pdf_bytes: by
 """
 
     filename = f"{po_ref}.pdf"
-    return send_email_via_brevo(
+    return send_email_via_resend(
         recipient=recipient,
         subject=subject,
         text_body=text_body,
@@ -899,20 +897,24 @@ def send_po_email_brevo(rfq: dict, quote: dict, recipient: str, po_pdf_bytes: by
     )
 
 
-def send_emails(rfq: dict, vendors: list) -> None:
-    """Send RFQ email to every vendor address via Brevo HTTP API."""
-    if not os.getenv("BREVO_API_KEY"):
-        sys.exit("ERROR: BREVO_API_KEY must be set in your .env file.")
+# Compatibility alias
+send_po_email_brevo = send_po_email_resend
 
-    print(f"\nSending via Brevo API ...")
+
+def send_emails(rfq: dict, vendors: list) -> None:
+    """Send RFQ email to every vendor address via Resend HTTPS API."""
+    if not os.getenv("RESEND_API_KEY"):
+        sys.exit("ERROR: RESEND_API_KEY must be set in your .env file.")
+
+    print(f"\nSending via Resend API ...")
     total = len(vendors)
     for i, vendor_email in enumerate(vendors):
         vendor_email = vendor_email.strip()
         if not vendor_email:
             continue
         try:
-            send_rfq_email_brevo(rfq, vendor_email)
-            print(f"  [OK]  Sent to {vendor_email} ({i+1}/{total})")
+            msg_id = send_rfq_email_resend(rfq, vendor_email)
+            print(f"  [OK]  Sent to {vendor_email} (ID: {msg_id}) ({i+1}/{total})")
         except Exception as exc:
             print(f"  [ERR] Failed to send to {vendor_email}: {exc}")
 
